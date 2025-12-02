@@ -36,7 +36,13 @@ int main(int argc, char *argv[]) {
 
   /* Make the response body */
   char content[MAXBUF];
-  sprintf(content, "<p>Welcome to the CGI program (%s)</p>\r\n", buf);
+  sprintf(content, "<p>Welcome to the CGI program</p>\r\n");
+  if (buf != NULL) {
+    sprintf(content, "%s<p>Received parameter (QUERY_STRING): %s</p>\r\n", content, buf);
+    sprintf(content, "%s<p>Parsed spin_for value: %.2f seconds</p>\r\n", content, spin_for);
+  } else {
+    sprintf(content, "%s<p>No parameters received (QUERY_STRING is empty)</p>\r\n", content);
+  }
   sprintf(content,
           "%s<p>My only purpose is to waste time on the server!</p>\r\n",
           content);

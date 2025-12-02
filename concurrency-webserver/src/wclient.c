@@ -1,27 +1,16 @@
-//
-// client.c: A very, very primitive HTTP client.
-//
-// To run, try:
-//      client hostname portnumber filename
-//
-// Sends one HTTP request to the specified HTTP server.
-// Prints out the HTTP response.
-//
-// For testing your server, you will want to modify this client.
-// For example:
-// You may want to make this multi-threaded so that you can
-// send many requests simultaneously to the server.
-//
-// You may also want to be able to request different URIs;
-// you may want to get more URIs from the command line
-// or read the list from a file.
-//
-// When we test your server, we will be using modifications to this client.
-//
 
 #include "io_helper.h"
+#include <pthread.h>
+#include <getopt.h>
 
 #define MAXBUF (8192)
+
+// Thread arguments structure
+typedef struct {
+  char *host;
+  int port;
+  char *filename;
+} client_thread_args_t;
 
 //
 // Send an HTTP request for the specified file
@@ -66,27 +55,122 @@ void client_print(int fd) {
   }
 }
 
-int main(int argc, char *argv[]) {
-  char *host, *filename;
-  int port;
+//
+// Thread function: each thread sends a request and prints the response
+//
+void *client_thread(void *arg) {
+  client_thread_args_t *args = (client_thread_args_t *)arg;
   int clientfd;
 
-  if (argc != 4) {
-    fprintf(stderr, "Usage: %s <host> <port> <filename>\n", argv[0]);
-    exit(1);
-  }
+  /* Open a connection to the specified host and port */
+  clientfd = open_client_fd_or_die(args->host, args->port);
 
-  host = argv[1];
-  port = atoi(argv[2]);
-  filename = argv[3];
-
-  /* Open a single connection to the specified host and port */
-  clientfd = open_client_fd_or_die(host, port);
-
-  client_send(clientfd, filename);
+  client_send(clientfd, args->filename);
   client_print(clientfd);
 
   close_or_die(clientfd);
+
+  return NULL;
+}
+
+int main(int argc, char *argv[]) {
+  char *host, *filename;
+  int port;
+  int num_threads = 1;  // Default to 1 thread for backward compatibility
+  int c;
+  int host_idx = -1, port_idx = -1, filename_idx = -1;
+
+  // First, try to parse -n option if it appears before positional arguments
+  opterr = 0;  // Suppress getopt error messages
+  optind = 1;  // Reset optind
+  
+  while ((c = getopt(argc, argv, "n:")) != -1) {
+    switch (c) {
+    case 'n':
+      num_threads = atoi(optarg);
+      if (num_threads <= 0) {
+        fprintf(stderr, "Error: number of threads must be positive\n");
+        exit(1);
+      }
+      break;
+    case '?':
+      break;
+    default:
+      break;
+    }
+  }
+
+  // Now manually scan all arguments to find -n if it appears after positional args
+  // and also find the positional arguments
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+      num_threads = atoi(argv[i + 1]);
+      if (num_threads <= 0) {
+        fprintf(stderr, "Error: number of threads must be positive\n");
+        exit(1);
+      }
+      i++;  // Skip the next argument (the number)
+    } else if (argv[i][0] != '-' && host_idx == -1) {
+      host_idx = i;
+    } else if (argv[i][0] != '-' && host_idx != -1 && port_idx == -1) {
+      port_idx = i;
+    } else if (argv[i][0] != '-' && port_idx != -1 && filename_idx == -1) {
+      filename_idx = i;
+    }
+  }
+
+  // Check if we found all required positional arguments
+  if (host_idx == -1 || port_idx == -1 || filename_idx == -1) {
+    fprintf(stderr, "Usage: %s <host> <port> <filename> [-n <num_threads>]\n", argv[0]);
+    fprintf(stderr, "   or: %s -n <num_threads> <host> <port> <filename>\n", argv[0]);
+    fprintf(stderr, "  -n: number of concurrent threads (default: 1)\n");
+    exit(1);
+  }
+
+  host = argv[host_idx];
+  port = atoi(argv[port_idx]);
+  filename = argv[filename_idx];
+
+  // If num_threads is 1, use the original single-threaded approach for backward compatibility
+  if (num_threads == 1) {
+    int clientfd = open_client_fd_or_die(host, port);
+    client_send(clientfd, filename);
+    client_print(clientfd);
+    close_or_die(clientfd);
+    exit(0);
+  }
+
+  // Multi-threaded mode: create threads
+  pthread_t *threads = malloc(sizeof(pthread_t) * num_threads);
+  client_thread_args_t *args = malloc(sizeof(client_thread_args_t) * num_threads);
+
+  if (!threads || !args) {
+    fprintf(stderr, "Error: failed to allocate memory for threads\n");
+    exit(1);
+  }
+
+  // Initialize thread arguments
+  for (int i = 0; i < num_threads; i++) {
+    args[i].host = host;
+    args[i].port = port;
+    args[i].filename = filename;
+  }
+
+  // Create threads
+  for (int i = 0; i < num_threads; i++) {
+    if (pthread_create(&threads[i], NULL, client_thread, &args[i]) != 0) {
+      fprintf(stderr, "Error: failed to create thread %d\n", i);
+      exit(1);
+    }
+  }
+
+  // Wait for all threads to complete
+  for (int i = 0; i < num_threads; i++) {
+    pthread_join(threads[i], NULL);
+  }
+
+  free(threads);
+  free(args);
 
   exit(0);
 }
